@@ -1,199 +1,178 @@
 package gitmetrics
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"log"
-	"net/http"
+
+	"github.com/machinebox/graphql"
 )
 
-// Repository represents a GitHub repository
 type Repository struct {
 	Name    string   `json:"name"`
 	Commits []Commit `json:"commits"`
 }
 
-// Commit represents a GitHub commit
 type Commit struct {
-	SHA    string `json:"sha"`
-	Commit struct {
-		Author struct {
-			Name string `json:"name"`
-			Date string `json:"date"`
-		} `json:"author"`
-		Message string `json:"message"`
-	} `json:"commit"`
-	Stats struct {
-		Additions int `json:"additions"`
-		Deletions int `json:"deletions"`
-		Total     int `json:"total"`
-	} `json:"stats,omitempty"`
-	Files []struct {
-		Additions int    `json:"additions"`
-		Deletions int    `json:"deletions"`
-		Changes   int    `json:"changes"`
-		Filename  string `json:"filename"`
-		Status    string `json:"status"`
-	} `json:"files,omitempty"`
+	SHA     string `json:"sha"`
+	Message string `json:"message"`
+	Author  struct {
+		Name string `json:"name"`
+		Date string `json:"date"`
+	} `json:"author"`
+	Additions    int `json:"additions"`
+	Deletions    int `json:"deletions"`
+	ChangedFiles int `json:"changedFiles"`
 }
 
-// CommitDetails represents detailed information about a GitHub commit
-type CommitDetails struct {
-	SHA   string `json:"sha"`
-	Stats struct {
-		Additions int `json:"additions"`
-		Deletions int `json:"deletions"`
-		Total     int `json:"total"`
-	} `json:"stats"`
-	Files []struct {
-		Additions int    `json:"additions"`
-		Deletions int    `json:"deletions"`
-		Changes   int    `json:"changes"`
-		Filename  string `json:"filename"`
-		Status    string `json:"status"`
-	} `json:"files"`
-}
+// fetchRepositoriesSimple fetches a list of repositories for a given user
+func fetchRepositoriesSimple(user string, gitHubToken string) ([]Repository, error) {
+	client := graphql.NewClient("https://api.github.com/graphql")
 
-func fetchRepositories(user string, gitHubToken string) ([]Repository, error) {
-	client := &http.Client{}
-	url := fmt.Sprintf("https://api.github.com/users/%s/repos", user)
-
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+gitHubToken)
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get repositories: %s", resp.Status)
-	}
-
-	var repositories []Repository
-	if err := json.NewDecoder(resp.Body).Decode(&repositories); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return repositories, nil
-}
-
-func fetchCommits(repoName string, gitHubToken string) ([]Commit, error) {
-	client := &http.Client{}
-	url := fmt.Sprintf("https://api.github.com/repos/ShreerajShettyK/%s/commits", repoName)
-
-	var allCommits []Commit
-	for {
-		log.Printf("Fetching commits from URL: %s", url)
-
-		req, err := http.NewRequest("GET", url, nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %w", err)
-		}
-
-		req.Header.Set("Authorization", "Bearer "+gitHubToken)
-		req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-		resp, err := client.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("failed to make request: %w", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("failed to get commits: %s", resp.Status)
-		}
-
-		var commits []Commit
-		if err := json.NewDecoder(resp.Body).Decode(&commits); err != nil {
-			return nil, fmt.Errorf("failed to decode response: %w", err)
-		}
-
-		allCommits = append(allCommits, commits...)
-
-		// Check if there's another page
-		url = ""
-		for _, link := range resp.Header["Link"] {
-			if len(link) > 0 {
-				var nextLink string
-				fmt.Sscanf(link, `<%s>; rel="next"`, &nextLink)
-				if nextLink != "" {
-					url = nextLink
-					break
+	req := graphql.NewRequest(`
+		query($login: String!) {
+			user(login: $login) {
+				repositories(first: 10) {
+					nodes {
+						name
+					}
 				}
 			}
 		}
-		if url == "" {
+	`)
+
+	req.Var("login", user)
+	req.Header.Set("Authorization", "Bearer "+gitHubToken)
+
+	var respData struct {
+		User struct {
+			Repositories struct {
+				Nodes []Repository `json:"nodes"`
+			} `json:"repositories"`
+		} `json:"user"`
+	}
+
+	ctx := context.Background()
+	if err := client.Run(ctx, req, &respData); err != nil {
+		return nil, fmt.Errorf("failed to fetch repositories: %w", err)
+	}
+
+	return respData.User.Repositories.Nodes, nil
+}
+
+func fetchCommitsWithPagination(user, repoName, gitHubToken string) ([]Commit, error) {
+	client := graphql.NewClient("https://api.github.com/graphql")
+
+	var commits []Commit
+	var cursor *string
+
+	for {
+		req := graphql.NewRequest(`
+			query($login: String!, $repoName: String!, $cursor: String) {
+				repository(owner: $login, name: $repoName) {
+					defaultBranchRef {
+						target {
+							... on Commit {
+								history(first: 20, after: $cursor) {
+									edges {
+										node {
+											oid
+											message
+											author {
+												name
+												date
+											}
+											additions
+											deletions
+											changedFiles
+										}
+									}
+									pageInfo {
+										hasNextPage
+										endCursor
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		`)
+
+		req.Var("login", user)
+		req.Var("repoName", repoName)
+		req.Var("cursor", cursor)
+		req.Header.Set("Authorization", "Bearer "+gitHubToken)
+
+		var respData struct {
+			Repository struct {
+				DefaultBranchRef struct {
+					Target struct {
+						History struct {
+							Edges []struct {
+								Node struct {
+									OID     string `json:"oid"`
+									Message string `json:"message"`
+									Author  struct {
+										Name string `json:"name"`
+										Date string `json:"date"`
+									} `json:"author"`
+									Additions    int `json:"additions"`
+									Deletions    int `json:"deletions"`
+									ChangedFiles int `json:"changedFiles"`
+								} `json:"node"`
+							} `json:"edges"`
+							PageInfo struct {
+								HasNextPage bool   `json:"hasNextPage"`
+								EndCursor   string `json:"endCursor"`
+							} `json:"pageInfo"`
+						} `json:"history"`
+					} `json:"target"`
+				} `json:"defaultBranchRef"`
+			} `json:"repository"`
+		}
+
+		ctx := context.Background()
+		if err := client.Run(ctx, req, &respData); err != nil {
+			return nil, fmt.Errorf("failed to fetch commits: %w", err)
+		}
+
+		for _, commitEdge := range respData.Repository.DefaultBranchRef.Target.History.Edges {
+			commitNode := commitEdge.Node
+			commit := Commit{
+				SHA:          commitNode.OID,
+				Message:      commitNode.Message,
+				Author:       commitNode.Author,
+				Additions:    commitNode.Additions,
+				Deletions:    commitNode.Deletions,
+				ChangedFiles: commitNode.ChangedFiles,
+			}
+			commits = append(commits, commit)
+		}
+
+		if !respData.Repository.DefaultBranchRef.Target.History.PageInfo.HasNextPage {
 			break
 		}
+
+		cursor = &respData.Repository.DefaultBranchRef.Target.History.PageInfo.EndCursor
 	}
 
-	return allCommits, nil
+	return commits, nil
 }
 
-func fetchCommitDetails(repoName string, sha string, gitHubToken string) (*CommitDetails, error) {
-	client := &http.Client{}
-	url := fmt.Sprintf("https://api.github.com/repos/ShreerajShettyK/%s/commits/%s", repoName, sha)
-
-	log.Printf("Fetching commit details from URL: %s", url)
-
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+gitHubToken)
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get commit details: %s", resp.Status)
-	}
-
-	var commitDetails CommitDetails
-	if err := json.NewDecoder(resp.Body).Decode(&commitDetails); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return &commitDetails, nil
-}
-
-func GetAllCommitMetrics(user string, gitHubToken string) ([]Repository, error) {
-	repositories, err := fetchRepositories(user, gitHubToken)
+func FetchAllCommits(user string, gitHubToken string) ([]Repository, error) {
+	repositories, err := fetchRepositoriesSimple(user, gitHubToken)
 	if err != nil {
 		return nil, err
 	}
 
 	for i, repo := range repositories {
-		commits, err := fetchCommits(repo.Name, gitHubToken)
+		commits, err := fetchCommitsWithPagination(user, repo.Name, gitHubToken)
 		if err != nil {
 			log.Printf("failed to get commits for repo %s: %v", repo.Name, err)
 			continue
 		}
-
-		for _, commit := range commits {
-			details, err := fetchCommitDetails(repo.Name, commit.SHA, gitHubToken)
-			if err != nil {
-				log.Printf("failed to get commit details for repo %s, commit %s: %v", repo.Name, commit.SHA, err)
-				continue
-			}
-
-			commit.Stats = details.Stats
-			commit.Files = details.Files
-
-			repositories[i].Commits = append(repositories[i].Commits, commit)
-		}
+		repositories[i].Commits = commits
 	}
 
 	return repositories, nil

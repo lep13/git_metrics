@@ -31,7 +31,7 @@ func main() {
 			return
 		}
 
-		repositories, err := gitmetrics.GetAllCommitMetrics(user, cfg.GitHubToken)
+		repositories, err := gitmetrics.FetchAllCommits(user, cfg.GitHubToken)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("could not get commit metrics: %v", err), http.StatusInternalServerError)
 			return

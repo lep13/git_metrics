@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -31,14 +30,26 @@ func main() {
 			return
 		}
 
-		repositories, err := gitmetrics.FetchAllCommits(user, cfg.GitHubToken)
+		repositories, err := gitmetrics.FetchRepositoriesSimple(user, cfg.GitHubToken)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("could not get commit metrics: %v", err), http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf("failed to fetch repositories: %v", err), http.StatusInternalServerError)
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(repositories)
+		for _, repo := range repositories {
+			commits, err := gitmetrics.FetchCommits(user, repo.Name, cfg.GitHubToken)
+			if err != nil {
+				log.Printf("failed to get commits for repo %s: %v", repo.Name, err)
+				continue
+			}
+
+			if err := gitmetrics.SaveCommitsToDB(commits); err != nil {
+				log.Printf("failed to save commits for repo %s: %v", repo.Name, err)
+			}
+		}
+
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "Commits fetched and stored in MongoDB successfully.")
 	})
 
 	fmt.Println("Server is running on port 8080...")

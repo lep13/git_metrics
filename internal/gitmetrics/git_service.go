@@ -3,36 +3,37 @@ package gitmetrics
 import (
 	"context"
 	"fmt"
-	"log"
+	"time"
 
+	"github.com/ShreerajShettyK/git_metrics/internal/db"
 	"github.com/machinebox/graphql"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-type Repository struct {
-	Name    string   `json:"name"`
-	Commits []Commit `json:"commits"`
-}
-
 type Commit struct {
-	SHA     string `json:"sha"`
-	Message string `json:"message"`
-	Author  struct {
-		Name string `json:"name"`
-		Date string `json:"date"`
-	} `json:"author"`
-	Additions    int `json:"additions"`
-	Deletions    int `json:"deletions"`
-	ChangedFiles int `json:"changedFiles"`
+	CommitMessage string    `bson:"commit_message"`
+	LinesDeleted  int       `bson:"lines_deleted"`
+	CommitID      string    `bson:"commit_id"`
+	CommittedBy   string    `bson:"commited_by"`
+	LinesAdded    int       `bson:"lines_added"`
+	RepoName      string    `bson:"reponame"`
+	CommitDate    time.Time `bson:"commit_date"`
+	FilesAdded    int       `bson:"files_added"`
+	FilesDeleted  int       `bson:"files_deleted"`
+	FilesUpdated  int       `bson:"files_updated"`
 }
 
-// fetchRepositoriesSimple fetches a list of repositories for a given user
-func fetchRepositoriesSimple(user string, gitHubToken string) ([]Repository, error) {
-	client := graphql.NewClient("https://api.github.com/graphql")
+type Repository struct {
+	Name string `json:"name"`
+}
 
+func FetchRepositoriesSimple(user, token string) ([]Repository, error) {
+	client := graphql.NewClient("https://api.github.com/graphql")
 	req := graphql.NewRequest(`
-		query($login: String!) {
-			user(login: $login) {
-				repositories(first: 10) {
+		query($user: String!) {
+			user(login: $user) {
+				repositories(first: 100) {
 					nodes {
 						name
 					}
@@ -41,8 +42,8 @@ func fetchRepositoriesSimple(user string, gitHubToken string) ([]Repository, err
 		}
 	`)
 
-	req.Var("login", user)
-	req.Header.Set("Authorization", "Bearer "+gitHubToken)
+	req.Var("user", user)
+	req.Header.Set("Authorization", "Bearer "+token)
 
 	var respData struct {
 		User struct {
@@ -52,44 +53,43 @@ func fetchRepositoriesSimple(user string, gitHubToken string) ([]Repository, err
 		} `json:"user"`
 	}
 
-	ctx := context.Background()
-	if err := client.Run(ctx, req, &respData); err != nil {
-		return nil, fmt.Errorf("failed to fetch repositories: %w", err)
+	if err := client.Run(context.Background(), req, &respData); err != nil {
+		return nil, err
 	}
 
 	return respData.User.Repositories.Nodes, nil
 }
 
-func fetchCommitsWithPagination(user, repoName, gitHubToken string) ([]Commit, error) {
+func FetchCommits(user, repo, token string) ([]Commit, error) {
 	client := graphql.NewClient("https://api.github.com/graphql")
-
-	var commits []Commit
-	var cursor *string
-
-	for {
-		req := graphql.NewRequest(`
-			query($login: String!, $repoName: String!, $cursor: String) {
-				repository(owner: $login, name: $repoName) {
-					defaultBranchRef {
-						target {
-							... on Commit {
-								history(first: 20, after: $cursor) {
-									edges {
-										node {
-											oid
-											message
-											author {
-												name
-												date
-											}
-											additions
-											deletions
-											changedFiles
-										}
+	req := graphql.NewRequest(`
+		query($user: String!, $repo: String!) {
+			repository(owner: $user, name: $repo) {
+				ref(qualifiedName: "main") {
+					target {
+						... on Commit {
+							history(first: 100) {
+								nodes {
+									oid
+									message
+									author {
+										name
+										date
 									}
-									pageInfo {
-										hasNextPage
-										endCursor
+									additions
+									deletions
+									changedFiles
+									associatedPullRequests(first: 1) {
+										nodes {
+											files(first: 100) {
+												nodes {
+													additions
+													deletions
+													path
+													changeType
+												}
+											}
+										}
 									}
 								}
 							}
@@ -97,83 +97,95 @@ func fetchCommitsWithPagination(user, repoName, gitHubToken string) ([]Commit, e
 					}
 				}
 			}
-		`)
+		}
+	`)
 
-		req.Var("login", user)
-		req.Var("repoName", repoName)
-		req.Var("cursor", cursor)
-		req.Header.Set("Authorization", "Bearer "+gitHubToken)
+	req.Var("user", user)
+	req.Var("repo", repo)
+	req.Header.Set("Authorization", "Bearer "+token)
 
-		var respData struct {
-			Repository struct {
-				DefaultBranchRef struct {
-					Target struct {
-						History struct {
-							Edges []struct {
-								Node struct {
-									OID     string `json:"oid"`
-									Message string `json:"message"`
-									Author  struct {
-										Name string `json:"name"`
-										Date string `json:"date"`
-									} `json:"author"`
-									Additions    int `json:"additions"`
-									Deletions    int `json:"deletions"`
-									ChangedFiles int `json:"changedFiles"`
-								} `json:"node"`
-							} `json:"edges"`
-							PageInfo struct {
-								HasNextPage bool   `json:"hasNextPage"`
-								EndCursor   string `json:"endCursor"`
-							} `json:"pageInfo"`
-						} `json:"history"`
-					} `json:"target"`
-				} `json:"defaultBranchRef"`
-			} `json:"repository"`
+	var respData struct {
+		Repository struct {
+			Ref struct {
+				Target struct {
+					History struct {
+						Nodes []struct {
+							Oid     string `json:"oid"`
+							Message string `json:"message"`
+							Author  struct {
+								Name string    `json:"name"`
+								Date time.Time `json:"date"`
+							} `json:"author"`
+							Additions              int `json:"additions"`
+							Deletions              int `json:"deletions"`
+							ChangedFiles           int `json:"changedFiles"`
+							AssociatedPullRequests struct {
+								Nodes []struct {
+									Files struct {
+										Nodes []struct {
+											Additions  int    `json:"additions"`
+											Deletions  int    `json:"deletions"`
+											Path       string `json:"path"`
+											ChangeType string `json:"changeType"`
+										} `json:"nodes"`
+									} `json:"files"`
+								} `json:"nodes"`
+							} `json:"associatedPullRequests"`
+						} `json:"nodes"`
+					} `json:"history"`
+				} `json:"target"`
+			} `json:"ref"`
+		} `json:"repository"`
+	}
+
+	if err := client.Run(context.Background(), req, &respData); err != nil {
+		return nil, err
+	}
+
+	var commits []Commit
+
+	for _, node := range respData.Repository.Ref.Target.History.Nodes {
+		commit := Commit{
+			CommitMessage: node.Message,
+			LinesDeleted:  node.Deletions,
+			CommitID:      node.Oid,
+			CommittedBy:   node.Author.Name,
+			LinesAdded:    node.Additions,
+			RepoName:      repo,
+			CommitDate:    node.Author.Date,
 		}
 
-		ctx := context.Background()
-		if err := client.Run(ctx, req, &respData); err != nil {
-			return nil, fmt.Errorf("failed to fetch commits: %w", err)
-		}
-
-		for _, commitEdge := range respData.Repository.DefaultBranchRef.Target.History.Edges {
-			commitNode := commitEdge.Node
-			commit := Commit{
-				SHA:          commitNode.OID,
-				Message:      commitNode.Message,
-				Author:       commitNode.Author,
-				Additions:    commitNode.Additions,
-				Deletions:    commitNode.Deletions,
-				ChangedFiles: commitNode.ChangedFiles,
+		for _, pr := range node.AssociatedPullRequests.Nodes {
+			for _, file := range pr.Files.Nodes {
+				switch file.ChangeType {
+				case "ADDED":
+					commit.FilesAdded++
+				case "MODIFIED":
+					commit.FilesUpdated++
+				case "REMOVED":
+					commit.FilesDeleted++
+				}
 			}
-			commits = append(commits, commit)
 		}
 
-		if !respData.Repository.DefaultBranchRef.Target.History.PageInfo.HasNextPage {
-			break
-		}
-
-		cursor = &respData.Repository.DefaultBranchRef.Target.History.PageInfo.EndCursor
+		commits = append(commits, commit)
 	}
 
 	return commits, nil
 }
 
-func FetchAllCommits(user string, gitHubToken string) ([]Repository, error) {
-	repositories, err := fetchRepositoriesSimple(user, gitHubToken)
-	if err != nil {
-		return nil, err
-	}
+func SaveCommitsToDB(commits []Commit) error {
+	collection := db.GetCollection()
 
-	for i, repo := range repositories {
-		commits, err := fetchCommitsWithPagination(user, repo.Name, gitHubToken)
+	for _, commit := range commits {
+		filter := bson.M{"commit_id": commit.CommitID}
+		update := bson.M{"$setOnInsert": commit}
+		opts := options.Update().SetUpsert(true)
+		_, err := collection.UpdateOne(context.Background(), filter, update, opts)
 		if err != nil {
-			log.Printf("failed to get commits for repo %s: %v", repo.Name, err)
-			continue
+			return fmt.Errorf("failed to update commit: %w", err)
 		}
-		repositories[i].Commits = commits
 	}
 
-	return repositories, nil
+	return nil
 }

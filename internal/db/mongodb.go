@@ -10,11 +10,43 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
-var MongoClient *mongo.Client
+// MongoClientInterface defines the interface for MongoDB client methods used in our code.
+type MongoClientInterface interface {
+	Ping(ctx context.Context, rp *readpref.ReadPref) error
+	Database(name string, opts ...*options.DatabaseOptions) *mongo.Database
+}
+
+// MongoClientWrapper wraps the actual MongoDB client to conform to our interface.
+type MongoClientWrapper struct {
+	Client *mongo.Client
+}
+
+func (m *MongoClientWrapper) Ping(ctx context.Context, rp *readpref.ReadPref) error {
+	return m.Client.Ping(ctx, rp)
+}
+
+func (m *MongoClientWrapper) Database(name string, opts ...*options.DatabaseOptions) *mongo.Database {
+	return m.Client.Database(name, opts...)
+}
+
+// MongoClient holds the actual MongoDB client or a mock for testing.
+var MongoClient MongoClientInterface
+
+// MongoConnectFuncType defines the function type for connecting to MongoDB.
+type MongoConnectFuncType func(ctx context.Context, uri string) (MongoClientInterface, error)
+
+// DefaultMongoConnectFunc is the default function for connecting to MongoDB.
+var DefaultMongoConnectFunc MongoConnectFuncType = func(ctx context.Context, uri string) (MongoClientInterface, error) {
+	clientOptions := options.Client().ApplyURI(uri)
+	client, err := mongo.Connect(ctx, clientOptions)
+	if err != nil {
+		return nil, err
+	}
+	return &MongoClientWrapper{Client: client}, nil
+}
 
 // InitializeMongoDB initializes the MongoDB client connection.
 func InitializeMongoDB(uri string) error {
-	// Connect to MongoDB using the default or injected connect function
 	var err error
 	MongoClient, err = DefaultMongoConnectFunc(context.Background(), uri)
 	if err != nil {
@@ -22,7 +54,6 @@ func InitializeMongoDB(uri string) error {
 		return err
 	}
 
-	// Adding a timeout to the ping context
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -34,17 +65,6 @@ func InitializeMongoDB(uri string) error {
 
 	log.Println("Connected to MongoDB successfully")
 	return nil
-}
-
-// DefaultMongoConnectFunc connects to MongoDB with the provided URI.
-func DefaultMongoConnectFunc(ctx context.Context, uri string) (*mongo.Client, error) {
-	clientOpts := options.Client().ApplyURI(uri)
-	client, err := mongo.Connect(ctx, clientOpts)
-	if err != nil {
-		return nil, err
-	}
-
-	return client, nil
 }
 
 // GetCollection returns a collection from the MongoDB database.

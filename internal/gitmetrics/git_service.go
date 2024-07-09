@@ -2,7 +2,11 @@ package gitmetrics
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"log"
+	"net/http"
 	"time"
 
 	"github.com/ShreerajShettyK/git_metrics/internal/db"
@@ -79,18 +83,6 @@ func FetchCommits(user, repo, token string) ([]Commit, error) {
 									additions
 									deletions
 									changedFiles
-									associatedPullRequests(first: 1) {
-										nodes {
-											files(first: 100) {
-												nodes {
-													additions
-													deletions
-													path
-													changeType
-												}
-											}
-										}
-									}
 								}
 							}
 						}
@@ -116,21 +108,9 @@ func FetchCommits(user, repo, token string) ([]Commit, error) {
 								Name string    `json:"name"`
 								Date time.Time `json:"date"`
 							} `json:"author"`
-							Additions              int `json:"additions"`
-							Deletions              int `json:"deletions"`
-							ChangedFiles           int `json:"changedFiles"`
-							AssociatedPullRequests struct {
-								Nodes []struct {
-									Files struct {
-										Nodes []struct {
-											Additions  int    `json:"additions"`
-											Deletions  int    `json:"deletions"`
-											Path       string `json:"path"`
-											ChangeType string `json:"changeType"`
-										} `json:"nodes"`
-									} `json:"files"`
-								} `json:"nodes"`
-							} `json:"associatedPullRequests"`
+							Additions    int `json:"additions"`
+							Deletions    int `json:"deletions"`
+							ChangedFiles int `json:"changedFiles"`
 						} `json:"nodes"`
 					} `json:"history"`
 				} `json:"target"`
@@ -155,23 +135,68 @@ func FetchCommits(user, repo, token string) ([]Commit, error) {
 			CommitDate:    node.Author.Date,
 		}
 
-		for _, pr := range node.AssociatedPullRequests.Nodes {
-			for _, file := range pr.Files.Nodes {
-				switch file.ChangeType {
-				case "ADDED":
-					commit.FilesAdded++
-				case "MODIFIED":
-					commit.FilesUpdated++
-				case "REMOVED":
-					commit.FilesDeleted++
-				}
-			}
+		filesAdded, filesDeleted, filesUpdated, err := FetchCommitFileChanges(user, repo, node.Oid, token)
+		if err != nil {
+			log.Printf("failed to fetch file changes for commit %s: %v", node.Oid, err)
+		} else {
+			commit.FilesAdded = filesAdded
+			commit.FilesDeleted = filesDeleted
+			commit.FilesUpdated = filesUpdated
 		}
 
 		commits = append(commits, commit)
 	}
 
 	return commits, nil
+}
+
+func FetchCommitFileChanges(user, repo, commitID, token string) (int, int, int, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s", user, repo, commitID)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, 0, 0, fmt.Errorf("failed to fetch commit details: %s", resp.Status)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	var commitData struct {
+		Files []struct {
+			Status string `json:"status"`
+		} `json:"files"`
+	}
+
+	if err := json.Unmarshal(body, &commitData); err != nil {
+		return 0, 0, 0, err
+	}
+
+	filesAdded, filesDeleted, filesUpdated := 0, 0, 0
+	for _, file := range commitData.Files {
+		switch file.Status {
+		case "added":
+			filesAdded++
+		case "removed":
+			filesDeleted++
+		case "modified":
+			filesUpdated++
+		}
+	}
+
+	return filesAdded, filesDeleted, filesUpdated, nil
 }
 
 func SaveCommitsToDB(commits []Commit) error {

@@ -49,5 +49,5 @@ func DefaultMongoConnectFunc(ctx context.Context, uri string) (*mongo.Client, er
 
 // GetCollection returns a collection from the MongoDB database.
 func GetCollection() *mongo.Collection {
-	return MongoClient.Database("git_metrics").Collection("metrics")
+	return MongoClient.Database("dashboard").Collection("git_metrics")
 }

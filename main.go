@@ -32,19 +32,21 @@ func main() {
 
 		repositories, err := gitmetrics.FetchRepositoriesSimple(user, cfg.GitHubToken)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("failed to fetch repositories: %v", err), http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf("could not fetch repositories: %v", err), http.StatusInternalServerError)
 			return
 		}
 
 		for _, repo := range repositories {
 			commits, err := gitmetrics.FetchCommits(user, repo.Name, cfg.GitHubToken)
 			if err != nil {
-				log.Printf("failed to get commits for repo %s: %v", repo.Name, err)
-				continue
+				log.Printf("could not fetch commits for repo %s: %v", repo.Name, err)
+				continue // Skip this repository and continue with the next one
 			}
 
-			if err := gitmetrics.SaveCommitsToDB(commits); err != nil {
-				log.Printf("failed to save commits for repo %s: %v", repo.Name, err)
+			err = gitmetrics.SaveCommitsToDB(commits)
+			if err != nil {
+				log.Printf("could not save commits for repo %s: %v", repo.Name, err)
+				continue // Skip saving this repository's commits and continue with the next one
 			}
 		}
 

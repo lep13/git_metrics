@@ -10,23 +10,31 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
 
-type Config struct {
-	GitHubToken string `json:"github_token"`
-	MongoDBURI  string `json:"mongodb_uri"`
-	Region      string `json:"region"`
+// SecretsManagerInterface defines the interface for Secrets Manager client methods used in our code.
+type SecretsManagerInterface interface {
+	GetSecretValue(ctx context.Context, params *secretsmanager.GetSecretValueInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error)
 }
+
+// SecretManagerFunc allows for injecting a custom Secrets Manager function for testing.
+var SecretManagerFunc = func() (SecretsManagerInterface, error) {
+	cfg, err := loadAWSConfig(context.TODO())
+	if err != nil {
+		return nil, err
+	}
+	return secretsmanager.NewFromConfig(cfg), nil
+}
+
+// loadAWSConfig is a variable that points to the function that loads AWS config.
+// This allows us to replace it with a mock in tests.
+var loadAWSConfig = config.LoadDefaultConfig
 
 func LoadConfig() (*Config, error) {
 	secretName := "git_metrics"
 
-	// Load the Shared AWS Configuration (~/.aws/config)
-	cfg, err := config.LoadDefaultConfig(context.TODO())
+	svc, err := SecretManagerFunc()
 	if err != nil {
-		return nil, fmt.Errorf("unable to load SDK config, %v", err)
+		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
-
-	// Create a Secrets Manager client
-	svc := secretsmanager.NewFromConfig(cfg)
 
 	input := &secretsmanager.GetSecretValueInput{
 		SecretId: aws.String(secretName),

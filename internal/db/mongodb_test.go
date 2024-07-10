@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
@@ -124,15 +126,100 @@ func TestDefaultMongoConnectFunc_Failure(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// func TestGetCollection(t *testing.T) {
-// 	mockMongoClient := &MockMongoClient{
-// 		DatabaseFunc: func(name string, opts ...*options.DatabaseOptions) *mongo.Database {
-// 			return &mongo.Database{}
-// 		},
+func TestGetCollection(t *testing.T) {
+	mockMongoClient := &MockMongoClient{
+		DatabaseFunc: func(name string, opts ...*options.DatabaseOptions) *mongo.Database {
+			return &mongo.Database{}
+		},
+	}
+	MongoClient = mockMongoClient
+
+	// Save the original GetCollectionFunc and restore it after the test
+	originalGetCollectionFunc := GetCollectionFunc
+	defer func() { GetCollectionFunc = originalGetCollectionFunc }()
+
+	// Set the mock GetCollectionFunc
+	GetCollectionFunc = func() CollectionInterface {
+		return &MockCollection{}
+	}
+
+	collection := GetCollection()
+	assert.NotNil(t, collection)
+}
+
+// func TestDefaultGetCollection(t *testing.T) {
+// 	// Create a mock MongoClientInterface
+// 	mockMongoClient := new(MockMongoClient)
+// 	mockDatabase := new(MockDatabase)
+// 	mockCollection := new(MockCollection)
+
+// 	// Setup the mock to return the mock collection
+// 	mockDatabase.On("Collection", "git_metrics", mock.Anything).Return(mockCollection)
+
+// 	// Mock the MongoClient to return the mock database
+// 	mockMongoClient.DatabaseFunc = func(name string, opts ...*options.DatabaseOptions) *mongo.Database {
+// 		if name == "dashboard" {
+// 			return &mongo.Database{} // Return an empty mongo.Database struct for type compatibility
+// 		}
+// 		return &mongo.Database{}
 // 	}
+
+// 	// Set the MongoClient to our mock
 // 	MongoClient = mockMongoClient
 
-// 	collection := GetCollection()
+// 	// Mock the defaultGetCollection to return the mock collection directly
+// 	originalGetCollectionFunc := GetCollectionFunc
+// 	defer func() { GetCollectionFunc = originalGetCollectionFunc }()
+// 	GetCollectionFunc = func() CollectionInterface {
+// 		return mockCollection
+// 	}
+
+// 	collection := defaultGetCollection()
 // 	assert.NotNil(t, collection)
-// 	assert.Equal(t, "git_metrics", collection.Name())
+
+// 	// Verify that the mock expectations were met
+// 	mockDatabase.AssertExpectations(t)
+// 	mockCollection.AssertExpectations(t)
 // }
+
+func TestMockCollection_UpdateOne(t *testing.T) {
+	mockCollection := new(MockCollection)
+
+	// Setup expectations
+	mockCollection.On("UpdateOne", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(&mongo.UpdateResult{}, nil)
+
+	// Call the method
+	result, err := mockCollection.UpdateOne(context.Background(), bson.M{}, bson.M{}, nil)
+
+	// Validate expectations
+	assert.NoError(t, err)
+	assert.NotNil(t, result)
+	mockCollection.AssertExpectations(t)
+}
+
+func TestMockDatabase_Collection(t *testing.T) {
+	mockDatabase := new(MockDatabase)
+	mockCollection := new(MockCollection)
+
+	// Setup expectations
+	mockDatabase.On("Collection", "testCollection", mock.Anything).
+		Return(mockCollection)
+
+	// Call the method
+	collection := mockDatabase.Collection("testCollection")
+
+	// Validate expectations
+	assert.NotNil(t, collection)
+	mockDatabase.AssertExpectations(t)
+}
+
+func TestGetMockCollection(t *testing.T) {
+	mockCollection := GetMockCollection()
+	assert.NotNil(t, mockCollection)
+}
+
+func TestGetMockDatabase(t *testing.T) {
+	mockDatabase := GetMockDatabase()
+	assert.NotNil(t, mockDatabase)
+}

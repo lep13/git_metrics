@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/stretchr/testify/mock"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
@@ -45,6 +46,57 @@ var DefaultMongoConnectFunc MongoConnectFuncType = func(ctx context.Context, uri
 	return &MongoClientWrapper{Client: client}, nil
 }
 
+// CollectionGetterFunc is a function type for getting a collection.
+type CollectionGetterFunc func() CollectionInterface
+
+// GetCollectionFunc is a package-level variable holding the function to get a collection.
+var GetCollectionFunc CollectionGetterFunc = defaultGetCollection
+
+// CollectionInterface defines the methods to be mocked for MongoDB collection.
+type CollectionInterface interface {
+	UpdateOne(ctx context.Context, filter interface{}, update interface{}, opts ...*options.UpdateOptions) (*mongo.UpdateResult, error)
+}
+
+// defaultGetCollection returns the default collection.
+func defaultGetCollection() CollectionInterface {
+	return MongoClient.Database("dashboard").Collection("git_metrics")
+}
+
+// GetCollection returns a collection from the MongoDB database.
+func GetCollection() CollectionInterface {
+	return GetCollectionFunc()
+}
+
+// MockCollection is a mock type for the mongo.Collection used for testing.
+type MockCollection struct {
+	mock.Mock
+}
+
+func (m *MockCollection) UpdateOne(ctx context.Context, filter interface{}, update interface{}, opts ...*options.UpdateOptions) (*mongo.UpdateResult, error) {
+	args := m.Called(ctx, filter, update, opts)
+	return args.Get(0).(*mongo.UpdateResult), args.Error(1)
+}
+
+// MockDatabase is a mock type for the mongo.Database used for testing.
+type MockDatabase struct {
+	mock.Mock
+}
+
+func (m *MockDatabase) Collection(name string, opts ...*options.CollectionOptions) CollectionInterface {
+	args := m.Called(name, opts)
+	return args.Get(0).(CollectionInterface)
+}
+
+// GetMockCollection is a helper function for tests.
+func GetMockCollection() *MockCollection {
+	return &MockCollection{}
+}
+
+// GetMockDatabase is a helper function for tests.
+func GetMockDatabase() *MockDatabase {
+	return &MockDatabase{}
+}
+
 // InitializeMongoDB initializes the MongoDB client connection.
 func InitializeMongoDB(uri string) error {
 	var err error
@@ -65,9 +117,4 @@ func InitializeMongoDB(uri string) error {
 
 	log.Println("Connected to MongoDB successfully")
 	return nil
-}
-
-// GetCollection returns a collection from the MongoDB database.
-func GetCollection() *mongo.Collection {
-	return MongoClient.Database("dashboard").Collection("git_metrics")
 }

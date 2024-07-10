@@ -15,8 +15,15 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-func FetchRepositoriesSimple(user, token string) ([]Repository, error) {
-	client := graphql.NewClient("https://api.github.com/graphql")
+type GraphQLClient interface {
+	Run(ctx context.Context, req *graphql.Request, respData interface{}) error
+}
+
+type HTTPClient interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
+func FetchRepositoriesSimple(client GraphQLClient, user, token string) ([]Repository, error) {
 	req := graphql.NewRequest(`
 		query($user: String!) {
 			user(login: $user) {
@@ -47,8 +54,7 @@ func FetchRepositoriesSimple(user, token string) ([]Repository, error) {
 	return respData.User.Repositories.Nodes, nil
 }
 
-func FetchCommits(user, repo, token string) ([]Commit, error) {
-	client := graphql.NewClient("https://api.github.com/graphql")
+func FetchCommits(client GraphQLClient, httpClient HTTPClient, user, repo, token string) ([]Commit, error) {
 	req := graphql.NewRequest(`
 		query($user: String!, $repo: String!) {
 			repository(owner: $user, name: $repo) {
@@ -118,7 +124,7 @@ func FetchCommits(user, repo, token string) ([]Commit, error) {
 			CommitDate:    node.Author.Date,
 		}
 
-		filesAdded, filesDeleted, filesUpdated, err := FetchCommitFileChanges(user, repo, node.Oid, token)
+		filesAdded, filesDeleted, filesUpdated, err := FetchCommitFileChanges(httpClient, user, repo, node.Oid, token)
 		if err != nil {
 			log.Printf("failed to fetch file changes for commit %s: %v", node.Oid, err)
 		} else {
@@ -133,7 +139,7 @@ func FetchCommits(user, repo, token string) ([]Commit, error) {
 	return commits, nil
 }
 
-func FetchCommitFileChanges(user, repo, commitID, token string) (int, int, int, error) {
+func FetchCommitFileChanges(client HTTPClient, user, repo, commitID, token string) (int, int, int, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s", user, repo, commitID)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -141,7 +147,6 @@ func FetchCommitFileChanges(user, repo, commitID, token string) (int, int, int, 
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, 0, 0, err

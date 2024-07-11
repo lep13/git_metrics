@@ -11,16 +11,19 @@ import (
 	"github.com/machinebox/graphql"
 )
 
-// StartServer initializes the server and starts it.
+// Function variables to allow swapping with mocks in tests
+var LoadConfigFunc = config.LoadConfig
+var InitializeMongoDBFunc = db.InitializeMongoDB
+
 func StartServer() {
 	// Load Config
-	cfg, err := config.LoadConfig()
+	cfg, err := LoadConfigFunc()
 	if err != nil {
 		log.Fatalf("could not load config: %v", err)
 	}
 
 	// Initialize MongoDB connection
-	err = db.InitializeMongoDB(cfg.MongoDBURI)
+	err = InitializeMongoDBFunc(cfg.MongoDBURI)
 	if err != nil {
 		log.Fatalf("could not initialize MongoDB: %v", err)
 	}

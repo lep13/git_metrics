@@ -23,7 +23,7 @@ The Git Metrics Service is a Go-based application that fetches commit informatio
 1. Clone the repository:
 
    ```sh
-   git clone https://github.com/ShreerajShettyK/git_metrics.git
+   git clone https://github.com/lep13/git_metrics.git
    cd git_metrics
    ```
 

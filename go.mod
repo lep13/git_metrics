@@ -1,4 +1,4 @@
-module github.com/ShreerajShettyK/git_metrics
+module github.com/lep13/git_metrics
 
 go 1.22.3
 

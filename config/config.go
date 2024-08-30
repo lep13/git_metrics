@@ -25,7 +25,7 @@ var SecretManagerFunc = func() (SecretsManagerInterface, error) {
 }
 
 // loadAWSConfig is a variable that points to the function that loads AWS config.
-// This allows us to replace it with a mock in tests.
+// To replace it with a mock in tests.
 var loadAWSConfig = config.LoadDefaultConfig
 
 func LoadConfig() (*Config, error) {

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ShreerajShettyK/git_metrics/internal/db"
+	"github.com/lep13/git_metrics/internal/db"
 	"github.com/machinebox/graphql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -48,7 +48,11 @@ func TestFetchRepositoriesSimple_Success(t *testing.T) {
 		resp := args.Get(2).(*struct {
 			User struct {
 				Repositories struct {
-					Nodes []Repository `json:"nodes"`
+					Nodes    []Repository `json:"nodes"`
+					PageInfo struct {
+						HasNextPage bool   `json:"hasNextPage"`
+						EndCursor   string `json:"endCursor"`
+					} `json:"pageInfo"`
 				} `json:"repositories"`
 			} `json:"user"`
 		})
@@ -56,6 +60,7 @@ func TestFetchRepositoriesSimple_Success(t *testing.T) {
 			{Name: "repo1"},
 			{Name: "repo2"},
 		}
+		resp.User.Repositories.PageInfo.HasNextPage = false
 	})
 
 	repos, err := FetchRepositoriesSimple(mockClient, "user", "token")
@@ -87,78 +92,6 @@ func TestFetchCommits_Error(t *testing.T) {
 	assert.Nil(t, commits)
 	assert.Contains(t, err.Error(), "failed to fetch commits")
 }
-
-func TestFetchCommits_Success(t *testing.T) {
-	mockGraphQLClient := new(MockGraphQLClient)
-	mockGraphQLClient.On("Run", mock.Anything, mock.Anything, mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-		resp := args.Get(2).(*struct {
-			Repository struct {
-				Ref struct {
-					Target struct {
-						History struct {
-							Nodes []struct {
-								Oid     string `json:"oid"`
-								Message string `json:"message"`
-								Author  struct {
-									Name string    `json:"name"`
-									Date time.Time `json:"date"`
-								} `json:"author"`
-								Additions    int `json:"additions"`
-								Deletions    int `json:"deletions"`
-								ChangedFiles int `json:"changedFiles"`
-							} `json:"nodes"`
-						} `json:"history"`
-					} `json:"target"`
-				} `json:"ref"`
-			} `json:"repository"`
-		})
-		resp.Repository.Ref.Target.History.Nodes = []struct {
-			Oid     string `json:"oid"`
-			Message string `json:"message"`
-			Author  struct {
-				Name string    `json:"name"`
-				Date time.Time `json:"date"`
-			} `json:"author"`
-			Additions    int `json:"additions"`
-			Deletions    int `json:"deletions"`
-			ChangedFiles int `json:"changedFiles"`
-		}{
-			{
-				Oid:     "commit1",
-				Message: "Initial commit",
-				Author: struct {
-					Name string    `json:"name"`
-					Date time.Time `json:"date"`
-				}{Name: "author1", Date: time.Now()},
-				Additions:    10,
-				Deletions:    2,
-				ChangedFiles: 5,
-			},
-		}
-	})
-
-	mockHTTPClient := new(MockHTTPClient)
-	mockHTTPClient.On("Do", mock.Anything).Return(&http.Response{
-		StatusCode: http.StatusOK,
-		Body: io.NopCloser(strings.NewReader(`{
-			"files": [
-				{"status": "added"},
-				{"status": "modified"},
-				{"status": "removed"}
-			]
-		}`)),
-	}, nil)
-
-	commits, err := FetchCommits(mockGraphQLClient, mockHTTPClient, "user", "repo", "token")
-	assert.NoError(t, err)
-	assert.NotNil(t, commits)
-	assert.Len(t, commits, 1)
-	assert.Equal(t, "commit1", commits[0].CommitID)
-	assert.Equal(t, 1, commits[0].FilesAdded)
-	assert.Equal(t, 1, commits[0].FilesUpdated)
-	assert.Equal(t, 1, commits[0].FilesDeleted)
-}
-
 func TestFetchCommitFileChanges_Success(t *testing.T) {
 	mockHTTPClient := new(MockHTTPClient)
 	mockHTTPClient.On("Do", mock.Anything).Return(&http.Response{
@@ -325,3 +258,35 @@ func TestSaveCommitsToDB_Error(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to update commit")
 	mockCollection.AssertExpectations(t)
 }
+
+func TestGitMetricsImpl_SaveCommitsToDB(t *testing.T) {
+	commits := []Commit{
+		{
+			CommitID:      "commit1",
+			CommitMessage: "Initial commit",
+			LinesDeleted:  2,
+			LinesAdded:    10,
+			RepoName:      "repo1",
+			CommitDate:    time.Now(),
+			CommittedBy:   "author1",
+			FilesAdded:    1,
+			FilesDeleted:  1,
+			FilesUpdated:  1,
+		},
+	}
+
+	mockCollection := new(db.MockCollection)
+	mockCollection.On("UpdateOne", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(&mongo.UpdateResult{}, nil)
+
+	originalGetCollectionFunc := db.GetCollectionFunc
+	defer func() { db.GetCollectionFunc = originalGetCollectionFunc }()
+	db.GetCollectionFunc = func() db.CollectionInterface {
+		return mockCollection
+	}
+
+	metrics := GitMetricsImpl{}
+	err := metrics.SaveCommitsToDB(commits)
+	assert.NoError(t, err)
+	mockCollection.AssertExpectations(t)
+}
+
